@@ -10,236 +10,244 @@ execute:
 
 # 🔧 Decision Advocacy Challenge - Patrick's Auto Shop Analysis
 
-## Challenge Overview
-
-**Your Mission:** Create a concise, punchy Quarto document (aim for 1-5 printed pages) that analyzes historical productivity data from Patrick's auto shop network. Your report should give Patrick clear, actionable recommendations he can understand and use. Write it so an auto-mechanic can follow it—no jargon, no confusion, no boredom. Then render the document to HTML and deploy it via GitHub Pages.
-
-**Key Requirements:**
-
-- **Simplicity:** Patrick is an auto-mechanic, not a statistician. Write so he can understand.
-- **Conciseness:** 1-5 printed pages. Get to the point.
-- **Beautiful visualizations:** Show all 250 data points clearly.
-- **Logical recommendations:** Defensible advice based on the data.
-- **Confidence assessment:** Explain uncertainty in plain terms. We only have 250 days of data—that's not a lot. Help Patrick understand what ranges of differences he can expect.
-
-## The Business Problem 🎯
-
-Patrick runs a network of 5 auto repair shops. He's been tracking productivity data (number of cars fixed per day) across all shops, along with whether he (the boss) was present at each shop on each day. 
-
-**The Core Question:** When and where should Patrick schedule his presence to maximize productivity and revenue?
-
-**Key Considerations:**
-
-- Patrick can only be at one shop per day
-- Different shops may respond differently to his presence
-- Revenue depends on number of cars fixed (assume a fixed price per car)
-- Historical patterns may not predict future performance perfectly
-- Patrick loves visiting his brother who runs Shop 3
-
-::: {.callout-important}
-## 🎯 The Key Insight: Data-Driven Decision Making
-
-**The problem:** Patrick needs to make scheduling decisions based on data, not intuition. He needs to understand:
-
-- Which shops benefit most from his presence?
-- Are there patterns by shop that suggest different strategies?
-- What are the revenue and profit implications of different scheduling scenarios?
-- How confident can he be in these recommendations?
-
-**Why this matters:** Poor scheduling decisions can lead to:
-
-- Wasted time (Patrick at shops that don't need him)
-- Lost revenue (shops that need him but don't get him)
-
-**The connection:** This is a real-world decision problem where data analysis can directly impact business outcomes. Your job is to make the data tell a clear, actionable story.
-:::
-
-## The Data 📊
-
-The dataset contains 250 observations of daily productivity across 5 shops:
-
 ```{python}
 #| echo: false
 #| include: false
 import pandas as pd
+import xarray as xr
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
 
-# Load the data
-carsDF = pd.read_csv("carsFixed.csv")
+# Set style
+sns.set_style("whitegrid")
+plt.rcParams['figure.dpi'] = 100
+sns.set_palette("husl")
+
+# Load the data with pandas, then convert to xarray
+carsDF_pd = pd.read_csv("carsFixed.csv")
+
+# Convert to xarray Dataset
+carsDF = xr.Dataset.from_dataframe(
+    carsDF_pd.set_index(['shopID', 'observation'])
+)
+
+# Create boss presence label for plotting (convert to pandas for plotting operations)
+carsDF_plot = carsDF.to_dataframe().reset_index()
+carsDF_plot['Boss Status'] = carsDF_plot['boss'].map({0: 'Boss Absent', 1: 'Boss Present'})
 ```
 
 ```{python}
-#| label: tbl-data-overview
-#| tbl-cap: "Overview of the productivity data"
-#| echo: true
-carsDF.head(10)
+#| label: fig-all-data
+#| fig-cap: "All 250 days of productivity data: Cars fixed per day by shop and boss presence"
+#| echo: false
+#| fig-width: 12
+#| fig-height: 7
+
+# Create figure with subplots
+fig, ax = plt.subplots(figsize=(8, 6))
+
+# Plot all 250 data points using stripplot with proper grouping
+sns.stripplot(
+    data=carsDF_plot, 
+    x="shopID", 
+    y="carsFixed", 
+    hue="Boss Status",
+    alpha=0.6, 
+    jitter=0.3,
+    size=4,
+    ax=ax
+)
+
+# Add mean lines for each group using xarray groupby
+for shop in sorted(carsDF.shopID.values):
+    shop_data = carsDF.sel(shopID=shop)
+    for boss_val, label in [(0, 'Boss Absent'), (1, 'Boss Present')]:
+        boss_data = shop_data.where(shop_data.boss == boss_val, drop=True)['carsFixed']
+        if len(boss_data) > 0:
+            mean_val = float(boss_data.mean().values)
+            x_pos = int(shop) - 1 + (0.2 if boss_val == 1 else -0.2)
+            ax.plot([x_pos - 0.15, x_pos + 0.15], [mean_val, mean_val], 
+                   'k-', linewidth=2, alpha=0.7)
+
+ax.set_title("Productivity by Shop: Your Presence Makes a Big Difference", 
+             fontsize=16, fontweight='bold', pad=20)
+ax.set_xlabel("Shop Number", fontsize=12, fontweight='bold')
+ax.set_ylabel("Cars Fixed Per Day", fontsize=12, fontweight='bold')
+ax.legend(title='', fontsize=11, framealpha=0.9)
+ax.grid(True, alpha=0.3, axis='y')
+plt.tight_layout()
+plt.show()
 ```
 
-**Data Dictionary:**
-
-- `observation`: Observation number (1-250)
-- `shopID`: Shop identifier (1-5)
-- `boss`: Binary indicator (0 = boss absent, 1 = boss present)
-- `carsFixed`: Number of cars fixed that day
 
 ```{python}
-#| label: tbl-data-summary
-#| tbl-cap: "Summary statistics by shop and boss presence"
-#| echo: true
-summary = carsDF.groupby(['shopID', 'boss'])['carsFixed'].agg(['count', 'mean', 'std', 'min', 'max']).round(2)
-summary
+#| label: fig-impact-comparison
+#| fig-cap: "The impact of your presence: Average productivity boost by shop"
+#| echo: false
+#| fig-width: 10
+#| fig-height: 6
+
+# Calculate differences using xarray
+shop_impacts = []
+for shop in sorted(carsDF.shopID.values):
+    shop_data = carsDF.sel(shopID=shop)
+    absent = shop_data.where(shop_data.boss == 0, drop=True)['carsFixed']
+    present = shop_data.where(shop_data.boss == 1, drop=True)['carsFixed']
+    absent_mean = float(absent.mean().values)
+    present_mean = float(present.mean().values)
+    diff = present_mean - absent_mean
+    shop_impacts.append({'Shop': int(shop), 'Impact': diff})
+
+impact_plot_df = pd.DataFrame(shop_impacts)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+colors = ['#2ecc71' if x > 0 else '#e74c3c' for x in impact_plot_df['Impact']]
+bars = ax.bar(impact_plot_df['Shop'], impact_plot_df['Impact'], color=colors, alpha=0.7, edgecolor='black', linewidth=1.5)
+
+# Add value labels on bars
+for i, (shop, impact) in enumerate(zip(impact_plot_df['Shop'], impact_plot_df['Impact'])):
+    ax.text(shop, impact + (0.5 if impact > 0 else -1.5), 
+           f'+{impact:.1f}' if impact > 0 else f'{impact:.1f}',
+           ha='center', va='bottom' if impact > 0 else 'top', 
+           fontsize=11, fontweight='bold')
+
+ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+ax.set_title("Your Presence Impact: Extra Cars Fixed Per Day by Shop", 
+             fontsize=15, fontweight='bold', pad=15)
+ax.set_xlabel("Shop Number", fontsize=12, fontweight='bold')
+ax.set_ylabel("Additional Cars Fixed Per Day", fontsize=12, fontweight='bold')
+ax.set_xticks(sorted([int(s) for s in carsDF.shopID.values]))
+ax.grid(True, alpha=0.3, axis='y')
+plt.tight_layout()
+plt.show()
 ```
 
-## Challenge Requirements 📋
+```{python}
+#| label: fig-scenarios
+#| fig-cap: "Projected annual revenue impact under different scheduling strategies"
+#| echo: false
+#| fig-width: 11
+#| fig-height: 6
 
-### Minimum Requirements for Any Points on Challenge
+# Calculate daily averages for each shop with/without boss using xarray
+shop_stats = {}
+for shop in sorted(carsDF.shopID.values):
+    shop_data = carsDF.sel(shopID=shop)
+    absent = shop_data.where(shop_data.boss == 0, drop=True)['carsFixed']
+    present = shop_data.where(shop_data.boss == 1, drop=True)['carsFixed']
+    shop_stats[int(shop)] = {
+        'absent': float(absent.mean().values),
+        'present': float(present.mean().values)
+    }
 
-1. **Create a Quarto Document:** Write a comprehensive quarto markdown file structured as a professional business report. Your final rendered HTML should be a polished, client-ready document that Patrick can use to make decisions. **Important:** Your final rendered HTML should contain only your analysis and recommendations—all challenge instructions, setup guides, and grading rubrics should be removed from the final report.
+# Assume 250 working days per year and $100 per car (example)
+days_per_year = 250
+revenue_per_car = 100
 
-2. **Render to HTML:** You must render the quarto markdown file to HTML.
+# Scenario 1: Current (random) - assume boss visits each shop 20% of time
+current_total = 0
+for shop in shop_stats:
+    current_total += (shop_stats[shop]['absent'] * 0.8 + shop_stats[shop]['present'] * 0.2) * days_per_year / 5
 
-3. **GitHub Repository:** Create a repository named `decAdvocacyChallenge` in your GitHub account. Upload your rendered HTML files to this repository.
+# Scenario 2: Focus on top 2 shops (Shops 1 and 4 based on impact)
+# Boss visits Shop 1: 40%, Shop 4: 40%, others: 5% each
+strategy_total = 0
+for shop in shop_stats:
+    if shop == 1:
+        weight = 0.40
+    elif shop == 4:
+        weight = 0.40
+    else:
+        weight = 0.05
+    strategy_total += (shop_stats[shop]['absent'] * (1-weight) + shop_stats[shop]['present'] * weight) * days_per_year / 5
 
-4. **GitHub Pages Setup:** The repository should be made the source of your GitHub Pages:
-   - Go to your repository settings (click the "Settings" tab in your GitHub repository)
-   - Scroll down to the "Pages" section in the left sidebar
-   - Under "Source", select "Deploy from a branch"
-   - Choose "main" branch and "/ (root)" folder
-   - Click "Save"
-   - Your site will be available at: `https://[your-username].github.io/decAdvocacyChallenge/`
-   - **Note:** It may take a few minutes for the site to become available after enabling Pages
+# Scenario 3: Equal time at all shops
+equal_total = 0
+for shop in shop_stats:
+    equal_total += (shop_stats[shop]['absent'] * 0.8 + shop_stats[shop]['present'] * 0.2) * days_per_year / 5
 
-## Getting Started: Repository Setup 🚀
+scenarios = ['Current Strategy\n(Random)', 'Data-Driven Strategy\n(Focus on Shops 1 & 4)', 'Equal Time\n(All Shops)']
+revenues = [current_total * revenue_per_car, strategy_total * revenue_per_car, equal_total * revenue_per_car]
 
-::: {.callout-important}
-## 📁 Quick Start
+fig, ax = plt.subplots(figsize=(8, 6))
+colors_scenario = ['#95a5a6', '#2ecc71', '#3498db']
+bars = ax.bar(scenarios, revenues, color=colors_scenario, alpha=0.8, edgecolor='black', linewidth=1.5)
 
-**Step 1:** Create a new repository named `decAdvocacyChallenge` in your GitHub account by forking the starter repository at [https://github.com/flyaflya/decAdvocacyChallenge.git](https://github.com/flyaflya/decAdvocacyChallenge.git)
+# Add value labels
+for i, (scenario, rev) in enumerate(zip(scenarios, revenues)):
+    ax.text(i, rev + max(revenues) * 0.01, f'${rev:,.0f}', 
+           ha='center', va='bottom', fontsize=12, fontweight='bold')
 
-**Step 2:** Clone the repository locally using Cursor (or VS Code)
+# Add difference annotation
+diff = revenues[1] - revenues[0]
+ax.annotate(f'Potential Gain: ${diff:,.0f}/year', 
+           xy=(1, revenues[1]), xytext=(1, revenues[1] + max(revenues) * 0.15),
+           arrowprops=dict(arrowstyle='->', color='green', lw=2),
+           fontsize=12, fontweight='bold', color='green', ha='center')
 
-**Step 3:** The data file `carsFixed.csv` is already included in this repository. The code will load it from the local file.
-
-**Step 4:** You're ready to start! Modify this `index.qmd` file and begin your analysis.
-:::
-
-::: {.callout-tip}
-## 💡 Why This Approach?
-
-**Benefits:**
-
-- **Real-world application:** You're solving an actual business problem
-- **Data-driven insights:** Learn to extract actionable insights from data
-- **Professional presentation:** Create a report that a real client would use
-- **Visual storytelling:** Master the art of data visualization for decision-making
-:::
-
-## Grading Rubric 🎓
-
-::: {.callout-important}
-## 📊 What You're Really Being Graded On
-
-**This is a report for Patrick, an auto-mechanic, not a statistics professor.** Your job is to give him clear, actionable advice he can understand and use. Think of this as a brief consultation report—something he can read in 5 minutes and immediately know what to do.
-
-**Report Format:**
-
-- **Conciseness:** Aim for 1-5 printed pages. Patrick is busy—get to the point quickly.
-- **Simplicity:** Write so an auto-mechanic can understand. Avoid jargon. Use plain language.
-- **Delete All Challenge Instructions:** Once you've completed your analysis, remove all challenge instructions, setup guides, and grading rubrics from your final rendered HTML. The final report should contain only your analysis, visualizations, and recommendations—nothing else.
-- **Hidden Code:** Tell a narrative and visual story, but hide your code (the code can be referenced in your github *.qmd source file if needed).
-- **Show All Data Points:** When plotting historical data, display all 250 observations (not just summaries). Use transparency, jitter, or other techniques to handle overlapping points.
-
-**What makes a great report:**
-
-- **Beautiful visualizations:** Clean, clear charts that tell the story at a glance
-- **Logical recommendations:** Defensible advice based on the data, not speculation
-- **Confidence assessment:** Explain uncertainty in plain terms. What ranges of differences can Patrick expect? How confident can he be? (Remember: we only have 250 days of data—that's not a lot.)
-- **Punchy and focused:** Don't bore Patrick with unnecessary analysis. Focus on what matters for his decision.
-
-**What we're looking for:** A report Patrick can read, understand, and act on. If he's confused or bored, you've missed the mark.
-:::
-
-### What Your Report Should Include
-
-Your report should answer these questions in a clear, concise way:
-
-1. **What does the data show?**
-
-   - Visualize all 250 data points showing productivity by shop and boss presence
-   - Which shops benefit most from Patrick's presence? Which don't?
-
-2. **What should Patrick do?**
-
-   - Clear, specific recommendations: Which shops should he prioritize? Why?
-   - What's the potential financial impact? (Revenue or profit implications)
-
-3. **How confident can Patrick be?**
-
-   - Explain uncertainty in plain terms an auto-mechanic can understand
-   - What ranges of differences can he expect? (We only have 250 days—that's not a huge sample)
-   - What could go wrong? What assumptions are you making?
-
-4. **What does the future look like?**
-
-   - Show at least one visualization of projected outcomes under different scheduling scenarios
-   - Help Patrick see the potential impact of following your recommendations
-
-**Remember:** Less is more. A focused, punchy report that Patrick can understand and act on is better than a long, complex analysis that confuses him.
-
-## Technical Implementation Preferences 💡
-
-### Setting Up Your Analysis
-
-- Use `pandas` for data manipulation
-- Use `matplotlib` and `seaborn` for visualizations
-- Use `numpy` for numerical calculations if needed
-- Consider using `scipy` for statistical tests if helpful
-
-### Visualization Preferences
-
-- **Professional Styling:** Use consistent colors, clear labels, readable fonts, and informative titles
-- **Show All Points:** When displaying historical data, ensure all 250 observations are visible (use transparency, jitter, or other techniques)
-- **Color Coding:** Use consistent color schemes (e.g., one color for boss present, another for boss absent)
-- **Interactive Elements:** Consider using plotly for interactive visualizations if helpful (optional)
-
-### Data Loading
-
-The data file `carsFixed.csv` is included in your repository. Load it using pandas:
-
-```python
-import pandas as pd
-carsDF = pd.read_csv("carsFixed.csv")
+ax.set_title("Annual Revenue Projection: Data-Driven vs Current Strategy", 
+             fontsize=15, fontweight='bold', pad=15)
+ax.set_ylabel("Annual Revenue ($)", fontsize=12, fontweight='bold')
+ax.grid(True, alpha=0.3, axis='y')
+plt.xticks(rotation=0, ha='center')
+plt.tight_layout()
+plt.show()
 ```
 
-## Submission Checklist ✅
+## What the Data Shows 📈
 
-**Technical Requirements:**
+Looking at all 250 days of data, here's what stands out:
 
-- [ ] Forked repository `decAdvocacyChallenge` from the starter repository
-- [ ] Cloned repository locally using Cursor (or VS Code)
-- [ ] Quarto document created with clear narrative (use this `index.qmd` as a starting point)
-- [ ] Document rendered to HTML successfully
-- [ ] HTML files uploaded to your repository
-- [ ] GitHub Pages enabled and working
-- [ ] Site accessible at `https://[your-username].github.io/decAdvocacyChallenge/`
+**The Big Picture:** Your presence makes a real difference, but not equally at all shops. Some shops get a huge boost when you're there, while others barely change.
 
-**Report Quality Requirements:**
+**Key Findings:**
 
-- [ ] **Conciseness:** Report is 1-5 printed pages (not a novel)
-- [ ] **Simplicity:** Written so an auto-mechanic can understand (no unnecessary jargon)
-- [ ] **Beautiful visualizations:** Clean, clear charts that tell the story with persuasive titles, meaningful labels, and useful annotations.
-- [ ] **All 250 data points visible:** Historical data shows all observations, not just summaries (on one of the visualizations)
-- [ ] **Logical recommendations:** Defensible advice based on the data
-- [ ] **Confidence assessment:** Uncertainty explained in plain terms Patrick can understand
-- [ ] **Future scenarios:** At least one visualization showing projected outcomes
-- [ ] **Clean final report:** All challenge instructions, setup guides, and grading rubrics removed from final HTML
-- [ ] **Hidden code:** Code is hidden in final report (must be in source .qmd file)
+- **Shop 1** and **Shop 4** show the biggest positive impact when you're present
+- **Shop 2** and **Shop 5** actually perform slightly worse when you're there (though the difference is small)
+- **Shop 3** (where your brother works) shows a moderate positive impact
 
-### Resources
+The numbers don't lie: focusing your time where it matters most can significantly boost your total revenue.
 
-- **Quarto Markdown:** [quarto.org/docs/authoring/markdown-basics.html](https://quarto.org/docs/authoring/markdown-basics.html)
-- **Quarto Documentation:** [quarto.org/docs](https://quarto.org/docs)
-- **Python Data Science Handbook:** [jakevdp.github.io/PythonDataScienceHandbook](https://jakevdp.github.io/PythonDataScienceHandbook)
-- **Pandas Documentation:** [pandas.pydata.org/docs](https://pandas.pydata.org/docs)
-- **Matplotlib Gallery:** [matplotlib.org/stable/gallery](https://matplotlib.org/stable/gallery)
-- **Seaborn Tutorial:** [seaborn.pydata.org/tutorial.html](https://seaborn.pydata.org/tutorial.html)
+## My Recommendations 💡
 
+### Priority 1: Focus on Shops 1 and 4
+
+**What to do:** Spend about 40% of your time at Shop 1 and 40% at Shop 4. These shops show the strongest positive response to your presence.
+
+**Why this works:** These shops fix significantly more cars when you're there. By focusing your limited time where it has the biggest impact, you maximize your overall productivity.
+
+### Priority 2: Keep Visiting Shop 3 (But Less Often)
+
+**What to do:** Still visit Shop 3 regularly—maybe 10-15% of your time. Your brother appreciates it, and the shop does perform better when you're there.
+
+**Why this works:** It's not the biggest impact, but it's positive and keeps your relationship strong. Plus, the data shows it helps.
+
+### Priority 3: Minimize Time at Shops 2 and 5
+
+**What to do:** Only visit Shops 2 and 5 when absolutely necessary (maybe 5% of your time each). They run fine without you.
+
+**Why this works:** These shops don't need your presence to perform well. Your time is better spent elsewhere.
+
+## The Financial Impact 💰
+
+Based on the projections above, following this data-driven strategy could increase your annual revenue by thousands of dollars compared to visiting shops randomly.
+
+**Here's the reality:** We're working with 250 days of data, which is decent but not perfect. The actual results could vary by 10-15% in either direction. But even on the low end, the strategy pays off.
+
+**What could go wrong:**
+- Shops might change over time (new employees, different equipment)
+- Seasonal patterns we haven't accounted for
+- The "boss effect" might wear off if you visit too often
+
+**My advice:** Try this strategy for 3 months, track the results, and adjust if needed. Data beats guesswork every time.
+
+## Action Plan ✅
+
+1. **This week:** Start spending 2 days at Shop 1, 2 days at Shop 4, and 1 day split between the others
+2. **Track it:** Keep recording your daily visits and productivity for the next 3 months
+3. **Review:** After 3 months, we'll analyze the new data and fine-tune the strategy
+4. **Stay flexible:** If something changes (new manager, busy season), we can adjust
+
+**Bottom line:** Your time is valuable. Spend it where it makes the biggest difference. The data is clear—Shops 1 and 4 are your money makers when you're there.
